@@ -77,7 +77,7 @@ function hasPendingPerms() {
   </main>
 </template>
 
-<style>
+<style scoped>
 main {
   display: flex;
   height: 100svh;

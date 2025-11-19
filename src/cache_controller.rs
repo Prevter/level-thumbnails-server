@@ -76,6 +76,10 @@ impl CloudflareClient {
             Err(PurgeError { status, body: text })
         }
     }
+
+    pub async fn get_user_stats(&self) -> Result<u64, String> {
+        Ok(0)
+    }
 }
 
 pub fn purge(level_id: i64) {
