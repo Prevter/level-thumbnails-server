@@ -50,6 +50,7 @@ async fn main() {
         .route("/auth/session", get(login::get_session))
         .route("/auth/link", get(login::get_link_token))
         .route("/auth/link", post(login::link_account))
+        .route("/auth/logout", get(login::logout))
         // /user
         .route("/user/me", get(user::get_me))
         .route("/user/{id}", get(user::get_user_by_id))

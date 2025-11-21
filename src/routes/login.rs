@@ -329,3 +329,19 @@ pub async fn link_account(
         Err(response) => response,
     }
 }
+
+pub async fn logout() -> Response {
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(
+            "Set-Cookie",
+            "auth_token=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        )
+        .header(
+            "Set-Cookie",
+            "auth_role=; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        )
+        .header("Location", "/")
+        .body("Redirecting to homepage...".into())
+        .unwrap()
+}
