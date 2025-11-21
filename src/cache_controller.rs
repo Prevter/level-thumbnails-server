@@ -1,3 +1,5 @@
+use tracing::{warn, error, info};
+
 struct CloudflareClient {
     api_token: String,
     zone_id: String,
@@ -84,7 +86,7 @@ impl CloudflareClient {
 
 pub fn purge(level_id: i64) {
     if dotenv::var("CLOUDFLARE_API_KEY").is_err() {
-        eprintln!("CLOUDFLARE_API_KEY is not set, not purging level {}", level_id);
+        warn!("CLOUDFLARE_API_KEY is not set, not purging level {}", level_id);
         return;
     }
 
@@ -94,19 +96,21 @@ pub fn purge(level_id: i64) {
         for attempt in 1..=max_retries {
             match CloudflareClient::get().purge_thumbnail(level_id).await {
                 Ok(_) => {
-                    println!("Purge for id {} succeeded after {} attempt(s)", level_id, attempt);
+                    if attempt > 1 {
+                        info!("Purge for id {} succeeded after {} attempt(s)", level_id, attempt);
+                    }
                     return;
                 }
                 Err(e) => {
                     if e.status.as_u16() == 429 || e.status.is_server_error() {
                         let delay = 30 * attempt;
-                        eprintln!(
+                        error!(
                             "Purge failed for id {}: {}. Retrying in {} seconds (attempt {}/{})",
                             level_id, e.body, delay, attempt, max_retries
                         );
                         tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                     } else {
-                        eprintln!("Purge failed for id {}: {}", level_id, e.body);
+                        error!("Purge failed for id {}: {}", level_id, e.body);
                         break;
                     }
                 }

@@ -5,7 +5,6 @@ use axum::response::Response;
 use image::ImageReader;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::info;
 use webp::Encoder;
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]

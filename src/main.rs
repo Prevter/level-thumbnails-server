@@ -5,6 +5,7 @@ use tower_http::cors;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::filter::EnvFilter;
 
 mod auth;
 mod cache_controller;
@@ -20,10 +21,18 @@ async fn main() {
     dotenv::dotenv().ok();
 
     // setup logging
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string());
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
+
     let file_appender = RollingFileAppender::new(Rotation::DAILY, "logs", "server.log");
     let (non_blocking_logger, _guard) = tracing_appender::non_blocking(file_appender);
 
-    tracing_subscriber::fmt().with_writer(non_blocking_logger).with_ansi(false).init();
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking_logger)
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .init();
 
     // setup directories
     tokio::fs::create_dir_all("thumbnails").await.unwrap();

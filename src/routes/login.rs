@@ -7,7 +7,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::env;
-use tracing::info;
+use tracing::{warn, error};
 
 #[derive(Deserialize, Debug)]
 pub struct LoginPayload {
@@ -39,11 +39,6 @@ pub async fn login(
     State(db): State<database::Database>,
     Json(payload): Json<LoginPayload>,
 ) -> Response {
-    info!(
-        "Login attempt: account_id={}, user_id={}, username={}",
-        payload.account_id, payload.user_id, payload.username
-    );
-
     // Validate argon token
     let verdict = match auth::ArgonClient::get()
         .verify(payload.account_id, payload.user_id, &payload.username, &payload.argon_token)
@@ -51,6 +46,7 @@ pub async fn login(
     {
         Ok(verdict) => verdict,
         Err(e) => {
+            error!("Argon verification failed for user {}: {}", payload.username, e);
             return util::response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({
@@ -75,17 +71,23 @@ pub async fn login(
                         "token": UserSession::new(user.id, payload.username).to_jwt(),
                     }),
                 ),
-                Err(e) => util::response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({
-                        "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                        "error": "Database error",
-                        "details": e.to_string(),
-                    }),
-                ),
+                Err(e) => {
+                    error!("Database error during login for user {}: {}", payload.username, e);
+                    util::response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({
+                            "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                            "error": "Database error",
+                            "details": e.to_string(),
+                        }),
+                    )
+                }
             }
         }
-        verdict => handle_verdict_error(verdict),
+        verdict => {
+            warn!("Failed login attempt for user {}", payload.username);
+            handle_verdict_error(verdict)
+        }
     }
 }
 
@@ -126,14 +128,16 @@ pub async fn discord_oauth_handler(
     {
         Ok(response) => match response.json::<Value>().await {
             Ok(json) => json,
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to parse Discord token response: {}", e);
                 return util::str_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Failed to parse Discord response",
                 );
             }
         },
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to fetch Discord token: {}", e);
             return util::str_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch Discord token",
@@ -154,14 +158,16 @@ pub async fn discord_oauth_handler(
     {
         Ok(response) => match response.json::<Value>().await {
             Ok(json) => json,
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to parse Discord user info: {}", e);
                 return util::str_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Failed to parse Discord user info",
                 );
             }
         },
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to fetch Discord user info: {}", e);
             return util::str_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch Discord user info",
@@ -193,7 +199,10 @@ pub async fn discord_oauth_handler(
                 .body("Redirecting to dashboard...".into())
                 .unwrap()
         }
-        Err(e) => util::str_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => {
+            error!("Database error during Discord OAuth for user {}: {}", username, e);
+            util::str_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+        }
     }
 }
 
@@ -290,7 +299,10 @@ async fn migrate_account(
                 }),
             )
         }
-        Err(e) => util::str_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => {
+            error!("Account migration failed for user_id={}, discord_id={}: {}", user_id, discord_id, e);
+            util::str_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+        }
     }
 }
 
