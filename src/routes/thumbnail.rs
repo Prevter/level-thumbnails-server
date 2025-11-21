@@ -97,7 +97,7 @@ async fn resize_image(image_path: PathBuf, target_res: Res) -> Result<Vec<u8>, R
 }
 
 async fn handle_image(id: u64, res: Res, db: database::Database) -> Response {
-    info!("Handling image request for ID: {}, Resolution: {:?}", id, res);
+    // info!("Handling image request for ID: {}, Resolution: {:?}", id, res);
 
     // Check if image file exists
     let image_path = PathBuf::from(format!("thumbnails/{}.webp", id));

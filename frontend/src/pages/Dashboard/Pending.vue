@@ -132,7 +132,7 @@ async function thumbnailAction(id: number, accept: boolean) {
     </div>
     <div class="image-grid page-transition" v-else>
       <div v-for="item in pendingItems" :key="item.id" class="image-item" @click="selectedItem = item">
-        <img :src="`/pending/${item.id}/image`" alt="Thumbnail" class="thumbnail-image"/>
+        <img :src="`/pending/${item.id}/image`" alt="Thumbnail" class="thumbnail-image" loading="lazy" />
         <div class="thumbnail-info">
           By {{ item.username }}<br/>
           Level ID: {{ item.level_id }}<br/>
