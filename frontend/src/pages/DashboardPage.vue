@@ -8,27 +8,26 @@ import Thumbnails from "./Dashboard/Thumbnails.vue";
 import Dashboard from "./Dashboard/Dashboard.vue";
 
 const user = ref(SessionManager.getUser());
-if (!user.value) {
-  SessionManager.validateSession().then(() => {
-    user.value = SessionManager.getUser();
-  }).catch((error) => {
-    console.error("Session validation failed:", error);
-    SessionManager.logout();
-  })
-}
 
-const PAGES = [
-  {name: "Dashboard", path: "", icon: '/icons/dashboard.svg'},
-  {name: "My Thumbnails", path: "thumbnails", icon: '/icons/photos.svg'},
-  {name: "Pending", path: "pending", icon: '/icons/pending.svg'},
-  {name: "Settings", path: "settings", icon: '/icons/settings.svg'},
-]
+SessionManager.validateSession().then(() => {
+  user.value = SessionManager.getUser();
+}).catch((error) => {
+  console.error("Session validation failed:", error);
+  SessionManager.logout();
+});
 
 const currentPage = ref(window.location.hash.replace('#', '') || '');
 
 function hasPendingPerms() {
   return user.value && (user.value.role === 'admin' || user.value.role === 'moderator');
 }
+
+const PAGES = [
+  {name: "Dashboard", path: "", icon: '/icons/dashboard.svg'},
+  {name: "My Thumbnails", path: "thumbnails", icon: '/icons/photos.svg'},
+  {name: "Pending", path: "pending", icon: '/icons/pending.svg', requires: hasPendingPerms},
+  {name: "Settings", path: "settings", icon: '/icons/settings.svg'},
+]
 
 </script>
 
@@ -43,7 +42,12 @@ function hasPendingPerms() {
         </h3>
       </div>
       <div class="navbar slide-right">
-        <a v-for="page in PAGES" :key="page.name" :href="'#' + page.path" class="nav-link"
+        <a v-for="page in PAGES.filter(p => {
+          if (p.requires) {
+            return p.requires();
+          }
+          return true;
+        })" :key="page.name" :href="'#' + page.path" class="nav-link"
            :class="{ active: currentPage === page.path }" @click="currentPage = page.path">
           <img v-if="page.icon" :src="page.icon" alt=""/>
           <span>{{ page.name }}</span>
