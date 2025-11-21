@@ -24,7 +24,7 @@ export default class SessionManager {
             });
             if (response.ok) {
                 const data = await response.json();
-                console.log('Session validation response:', data);
+                // console.log('Session validation response:', data);
                 if (data.user) {
                     sessionStorage.setItem('user', JSON.stringify(data.user));
                 } else {
