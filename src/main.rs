@@ -22,8 +22,7 @@ async fn main() {
 
     // setup logging
     let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string());
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
 
     let file_appender = RollingFileAppender::new(Rotation::DAILY, "logs", "server.log");
     let (non_blocking_logger, _guard) = tracing_appender::non_blocking(file_appender);
@@ -62,6 +61,7 @@ async fn main() {
         .route("/auth/logout", get(login::logout))
         // /user
         .route("/user/me", get(user::get_me))
+        // .route("/user/me", delete(user::delete_me))
         .route("/user/{id}", get(user::get_user_by_id))
         // .route("/user/me/uploads", get(routes::user::get_my_uploads))
         // .route("/user/{id}/uploads", get(routes::user::get_user_uploads))

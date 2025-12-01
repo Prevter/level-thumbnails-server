@@ -1,5 +1,5 @@
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{FromRow, Postgres};
+use sqlx::{FromRow, Postgres, QueryBuilder};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -58,7 +58,7 @@ pub struct UploadExtended {
     pub accepted_by_username: Option<String>,
 }
 
-#[derive(FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct PendingUpload {
     pub id: i64,
     pub user_id: i64,
@@ -69,6 +69,21 @@ pub struct PendingUpload {
 
     #[sqlx(skip)]
     pub replacement: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingQueryOptions {
+    pub page: u32,
+    pub per_page: u32,
+    pub level_id: Option<i64>,
+    pub user_id: Option<i64>,
+    pub replacement_only: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingUploadsPage {
+    pub uploads: Vec<PendingUpload>,
+    pub total: i64,
 }
 
 #[derive(FromRow, Serialize, Deserialize)]
@@ -220,21 +235,19 @@ impl Database {
         image_path: &str,
         accepted: bool,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-                if accepted {
-                    "INSERT INTO uploads (level_id, user_id, image_path, accepted, accepted_time, accepted_by)
+        sqlx::query(if accepted {
+            "INSERT INTO uploads (level_id, user_id, image_path, accepted, accepted_time, accepted_by)
                      VALUES ($1, $2, $3, $4, NOW(), $2)"
-                } else {
-                    "INSERT INTO uploads (level_id, user_id, image_path, accepted)
+        } else {
+            "INSERT INTO uploads (level_id, user_id, image_path, accepted)
                      VALUES ($1, $2, $3, $4)"
-                }
-            )
-            .bind(level_id)
-            .bind(user_id)
-            .bind(image_path)
-            .bind(accepted)
-            .execute(&*self.pool)
-            .await?;
+        })
+        .bind(level_id)
+        .bind(user_id)
+        .bind(image_path)
+        .bind(accepted)
+        .execute(&*self.pool)
+        .await?;
         Ok(())
     }
 
@@ -249,15 +262,71 @@ impl Database {
         .await
     }
 
+    fn apply_pending_filters<'a>(
+        builder: &mut QueryBuilder<'a, Postgres>,
+        options: &PendingQueryOptions,
+    ) {
+        if let Some(level_id) = options.level_id {
+            builder.push(" AND uploads.level_id = ").push_bind(level_id);
+        }
+
+        if let Some(user_id) = options.user_id {
+            builder.push(" AND uploads.user_id = ").push_bind(user_id);
+        }
+
+        if options.replacement_only {
+            builder.push(
+                " AND EXISTS (
+                    SELECT 1 FROM uploads previous
+                    WHERE previous.level_id = uploads.level_id
+                      AND previous.accepted = TRUE
+                )",
+            );
+        }
+    }
+
+    pub async fn get_pending_uploads_paginated(
+        &self,
+        options: PendingQueryOptions,
+    ) -> Result<PendingUploadsPage, sqlx::Error> {
+        let per_page = options.per_page as i64;
+        let offset = ((options.page.saturating_sub(1)) as i64) * per_page;
+
+        let mut data_builder = QueryBuilder::new(
+            "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
+             LEFT JOIN users ON users.id = user_id
+             WHERE accepted = FALSE AND accepted_time IS NULL",
+        );
+        Self::apply_pending_filters(&mut data_builder, &options);
+        data_builder
+            .push(" ORDER BY upload_time ASC, uploads.id ASC LIMIT ")
+            .push_bind(per_page)
+            .push(" OFFSET ")
+            .push_bind(offset);
+
+        let uploads = data_builder.build_query_as::<PendingUpload>().fetch_all(&*self.pool).await?;
+
+        let mut count_builder = QueryBuilder::new(
+            "SELECT COUNT(*) FROM uploads
+             LEFT JOIN users ON users.id = user_id
+             WHERE accepted = FALSE AND accepted_time IS NULL",
+        );
+        Self::apply_pending_filters(&mut count_builder, &options);
+
+        let total: i64 = count_builder.build_query_scalar().fetch_one(&*self.pool).await?;
+
+        Ok(PendingUploadsPage { uploads, total })
+    }
+
     pub async fn get_pending_uploads_for_level(
         &self,
         level_id: i64,
     ) -> Result<Vec<PendingUpload>, sqlx::Error> {
         sqlx::query_as::<_, PendingUpload>(
             "SELECT uploads.id, user_id, username, accepted, upload_time FROM uploads
-                 LEFT JOIN users ON users.id = user_id
-                 WHERE accepted = FALSE AND accepted_time IS NULL AND level_id = $1
-                 ORDER BY upload_time",
+                  LEFT JOIN users ON users.id = user_id
+                  WHERE accepted = FALSE AND accepted_time IS NULL AND level_id = $1
+                  ORDER BY upload_time",
         )
         .bind(level_id)
         .fetch_all(&*self.pool)
@@ -269,10 +338,10 @@ impl Database {
         user_id: i64,
     ) -> Result<Vec<PendingUpload>, sqlx::Error> {
         sqlx::query_as::<_, PendingUpload>(
-            "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
-             LEFT JOIN users ON users.id = user_id
-             WHERE accepted = FALSE AND accepted_time IS NULL AND user_id = $1
-             ORDER BY upload_time",
+            "SELECT uploads.id, user_id, username, accepted, upload_time FROM uploads
+              LEFT JOIN users ON users.id = user_id
+              WHERE accepted = FALSE AND accepted_time IS NULL AND user_id = $1
+              ORDER BY upload_time",
         )
         .bind(user_id)
         .fetch_all(&*self.pool)
@@ -282,8 +351,8 @@ impl Database {
     pub async fn get_pending_upload(&self, id: i64) -> Result<PendingUpload, sqlx::Error> {
         sqlx::query_as::<_, PendingUpload>(
             "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
-             LEFT JOIN users ON users.id = user_id
-             WHERE accepted = FALSE AND accepted_time IS NULL AND uploads.id = $1",
+              LEFT JOIN users ON users.id = user_id
+              WHERE accepted = FALSE AND accepted_time IS NULL AND uploads.id = $1",
         )
         .bind(id)
         .fetch_one(&*self.pool)
@@ -298,50 +367,50 @@ impl Database {
         accept: bool,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-                "UPDATE uploads SET accepted = $1, accepted_time = NOW(), accepted_by = $2, reason = $3 WHERE id = $4",
-            )
-            .bind(accept)
-            .bind(accepted_by)
-            .bind(reason)
-            .bind(id)
-            .execute(&*self.pool)
-            .await?;
+                 "UPDATE uploads SET accepted = $1, accepted_time = NOW(), accepted_by = $2, reason = $3 WHERE id = $4",
+             )
+             .bind(accept)
+             .bind(accepted_by)
+             .bind(reason)
+             .bind(id)
+             .execute(&*self.pool)
+             .await?;
         Ok(())
     }
 
     pub async fn get_user_stats(&self, id: i64) -> Option<UserStats> {
         sqlx::query_as::<_, UserStats>(
-            "SELECT
-                users.id, users.account_id,
-                users.username, users.role,
-                COUNT(uploads.id) AS upload_count,
-                COUNT(DISTINCT uploads.level_id) AS level_count,
-                COUNT(uploads.id) FILTER (WHERE uploads.accepted = TRUE) AS accepted_upload_count,
-                COUNT(DISTINCT uploads.level_id) FILTER (WHERE uploads.accepted = TRUE) AS accepted_level_count,
-                (
-                  SELECT COUNT(*)
-                  FROM (
-                    SELECT u.level_id
-                    FROM uploads u
-                    WHERE u.accepted = TRUE
-                    AND u.user_id = users.id
-                    AND u.upload_time = (
-                      SELECT MAX(u2.upload_time)
-                      FROM uploads u2
-                      WHERE u2.level_id = u.level_id
-                        AND u2.accepted = TRUE
-                    )
-                  ) active_levels
-                ) AS active_thumbnail_count
-              FROM users
-              LEFT JOIN uploads ON users.id = uploads.user_id
-              WHERE users.id = $1
-              GROUP BY users.id, users.account_id, users.username, users.role",
-        )
-        .bind(id)
-        .fetch_optional(&*self.pool)
-        .await
-        .ok()?
+             "SELECT
+                 users.id, users.account_id,
+                 users.username, users.role,
+                 COUNT(uploads.id) AS upload_count,
+                 COUNT(DISTINCT uploads.level_id) AS level_count,
+                 COUNT(uploads.id) FILTER (WHERE uploads.accepted = TRUE) AS accepted_upload_count,
+                 COUNT(DISTINCT uploads.level_id) FILTER (WHERE uploads.accepted = TRUE) AS accepted_level_count,
+                 (
+                   SELECT COUNT(*)
+                   FROM (
+                     SELECT u.level_id
+                     FROM uploads u
+                     WHERE u.accepted = TRUE
+                     AND u.user_id = users.id
+                     AND u.upload_time = (
+                       SELECT MAX(u2.upload_time)
+                       FROM uploads u2
+                       WHERE u2.level_id = u.level_id
+                         AND u2.accepted = TRUE
+                     )
+                   ) active_levels
+                 ) AS active_thumbnail_count
+               FROM users
+               LEFT JOIN uploads ON users.id = uploads.user_id
+               WHERE users.id = $1
+               GROUP BY users.id, users.account_id, users.username, users.role",
+         )
+         .bind(id)
+         .fetch_optional(&*self.pool)
+         .await
+         .ok()?
     }
 
     pub async fn migrate_user_account(

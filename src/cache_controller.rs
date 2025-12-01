@@ -1,4 +1,4 @@
-use tracing::{warn, error, info};
+use tracing::{error, info, warn};
 
 struct CloudflareClient {
     api_token: String,

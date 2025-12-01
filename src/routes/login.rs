@@ -7,7 +7,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::env;
-use tracing::{warn, error};
+use tracing::{error, warn};
 
 #[derive(Deserialize, Debug)]
 pub struct LoginPayload {
@@ -300,7 +300,10 @@ async fn migrate_account(
             )
         }
         Err(e) => {
-            error!("Account migration failed for user_id={}, discord_id={}: {}", user_id, discord_id, e);
+            error!(
+                "Account migration failed for user_id={}, discord_id={}: {}",
+                user_id, discord_id, e
+            );
             util::str_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
         }
     }

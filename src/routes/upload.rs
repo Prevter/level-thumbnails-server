@@ -1,7 +1,7 @@
 use crate::{cache_controller, database, util};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,8 @@ use webp::Encoder;
 
 const IMAGE_WIDTH: u32 = 1920;
 const IMAGE_HEIGHT: u32 = 1080;
+const DEFAULT_PENDING_PAGE_SIZE: u32 = 24;
+const MAX_PENDING_PAGE_SIZE: u32 = 100;
 
 // Helper function to authenticate moderator/admin
 async fn authenticate_moderator(
@@ -175,42 +177,113 @@ enum PendingFilter {
     ByUser(i64),
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PendingQueryParams {
+    page: u32,
+    per_page: u32,
+    replacement_only: bool,
+    level_id: Option<i64>,
+    user_id: Option<i64>,
+}
+
+impl Default for PendingQueryParams {
+    fn default() -> Self {
+        Self {
+            page: 1,
+            per_page: DEFAULT_PENDING_PAGE_SIZE,
+            replacement_only: false,
+            level_id: None,
+            user_id: None,
+        }
+    }
+}
+
+impl PendingQueryParams {
+    fn sanitized(mut self) -> Self {
+        if self.page == 0 {
+            self.page = 1;
+        }
+
+        if self.per_page == 0 {
+            self.per_page = DEFAULT_PENDING_PAGE_SIZE;
+        }
+
+        self.per_page = self.per_page.min(MAX_PENDING_PAGE_SIZE);
+        self
+    }
+}
+
+#[derive(Serialize)]
+struct PendingUploadsResponse {
+    uploads: Vec<database::PendingUpload>,
+    page: u32,
+    per_page: u32,
+    total: i64,
+}
+
 async fn get_pending_uploads(
     headers: HeaderMap,
     db: &database::Database,
     filter: PendingFilter,
+    query: PendingQueryParams,
 ) -> Response {
-    let user = match authenticate_moderator(&headers, db).await {
-        Ok(user) => user,
-        Err(response) => return response,
+    let user = match filter {
+        PendingFilter::ByUser(_) => match util::auth_middleware(&headers, db).await {
+            Ok(user) => user,
+            Err(response) => return response,
+        },
+        _ => match authenticate_moderator(&headers, db).await {
+            Ok(user) => user,
+            Err(response) => return response,
+        },
     };
 
-    // Special case: users can view their own pending uploads
-    if let PendingFilter::ByUser(user_id) = filter {
-        if user.id != user_id {
-            return util::str_response(
-                StatusCode::FORBIDDEN,
-                "You can only view your own pending uploads",
-            );
+    let mut sanitized_query = query.sanitized();
+
+    match filter {
+        PendingFilter::ByUser(user_id) => {
+            if user.id != user_id
+                && !matches!(user.role, database::Role::Moderator | database::Role::Admin)
+            {
+                return util::str_response(
+                    StatusCode::FORBIDDEN,
+                    "You can only view your own pending uploads",
+                );
+            }
+            sanitized_query.user_id = Some(user_id);
         }
+        PendingFilter::ByLevel(level_id) => {
+            sanitized_query.level_id = Some(level_id);
+        }
+        PendingFilter::All => {}
     }
 
-    let uploads_result = match filter {
-        PendingFilter::All => db.get_pending_uploads().await,
-        PendingFilter::ByLevel(level_id) => db.get_pending_uploads_for_level(level_id).await,
-        PendingFilter::ByUser(user_id) => db.get_pending_uploads_for_user(user_id).await,
+    let options = database::PendingQueryOptions {
+        page: sanitized_query.page,
+        per_page: sanitized_query.per_page,
+        level_id: sanitized_query.level_id,
+        user_id: sanitized_query.user_id,
+        replacement_only: sanitized_query.replacement_only,
     };
 
-    match uploads_result {
-        Ok(mut uploads) => {
-            for upload in &mut uploads {
+    match db.get_pending_uploads_paginated(options).await {
+        Ok(mut page) => {
+            for upload in &mut page.uploads {
                 upload.replacement = is_image_uploaded(upload.level_id as u64).await;
             }
+
+            let response = PendingUploadsResponse {
+                uploads: page.uploads,
+                page: sanitized_query.page,
+                per_page: sanitized_query.per_page,
+                total: page.total,
+            };
 
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(serde_json::to_string(&uploads).unwrap().into())
+                .body(serde_json::to_string(&response).unwrap().into())
                 .unwrap()
         }
         Err(e) => util::str_response(
@@ -224,23 +297,26 @@ pub async fn get_pending_uploads_for_level(
     headers: HeaderMap,
     State(db): State<database::Database>,
     Path(id): Path<i64>,
+    Query(params): Query<PendingQueryParams>,
 ) -> Response {
-    get_pending_uploads(headers, &db, PendingFilter::ByLevel(id)).await
+    get_pending_uploads(headers, &db, PendingFilter::ByLevel(id), params).await
 }
 
 pub async fn get_all_pending_uploads(
     headers: HeaderMap,
     State(db): State<database::Database>,
+    Query(params): Query<PendingQueryParams>,
 ) -> Response {
-    get_pending_uploads(headers, &db, PendingFilter::All).await
+    get_pending_uploads(headers, &db, PendingFilter::All, params).await
 }
 
 pub async fn get_pending_uploads_for_user(
     headers: HeaderMap,
     State(db): State<database::Database>,
     Path(id): Path<i64>,
+    Query(params): Query<PendingQueryParams>,
 ) -> Response {
-    get_pending_uploads(headers, &db, PendingFilter::ByUser(id)).await
+    get_pending_uploads(headers, &db, PendingFilter::ByUser(id), params).await
 }
 
 pub async fn get_pending_info(
@@ -322,10 +398,13 @@ pub async fn pending_action(
     } else {
         // Reject: delete the pending image
         if let Err(e) = tokio::fs::remove_file(&old_image_path).await {
-            return util::str_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Error deleting image: {}", e),
-            );
+            // if the file doesn't exist, we can ignore the error
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return util::str_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Error deleting image: {}", e),
+                );
+            }
         }
 
         if let Err(e) = db.accept_upload(upload.id, user.id, action.reason, false).await {
