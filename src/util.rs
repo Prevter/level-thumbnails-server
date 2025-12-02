@@ -40,7 +40,7 @@ fn try_read_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
 
 async fn session_response(
     token: &str,
-    db: &database::Database,
+    db: &database::AppState,
 ) -> Result<database::User, Response> {
     match UserSession::from_jwt(token) {
         Ok(session) => match db.get_user_by_id(session.id).await {
@@ -53,7 +53,7 @@ async fn session_response(
 
 pub async fn auth_middleware(
     headers: &HeaderMap,
-    db: &database::Database,
+    db: &database::AppState,
 ) -> Result<database::User, Response> {
     match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
         Some(token) => session_response(token, db).await,

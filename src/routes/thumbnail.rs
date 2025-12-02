@@ -51,7 +51,7 @@ fn image_response(image_data: Vec<u8>, id: u64, upload_info: &database::UploadIn
 }
 
 async fn get_upload_info(
-    db: &database::Database,
+    db: &database::AppState,
     id: u64,
 ) -> Result<database::UploadInfo, Response> {
     match db.get_upload_info(id as i64).await {
@@ -95,7 +95,7 @@ async fn resize_image(image_path: PathBuf, target_res: Res) -> Result<Vec<u8>, R
     })
 }
 
-async fn handle_image(id: u64, res: Res, db: database::Database) -> Response {
+async fn handle_image(id: u64, res: Res, db: database::AppState) -> Response {
     // info!("Handling image request for ID: {}, Resolution: {:?}", id, res);
 
     // Check if image file exists
@@ -135,21 +135,21 @@ async fn handle_image(id: u64, res: Res, db: database::Database) -> Response {
 
 pub async fn image_handler_with_res(
     Path((id, res)): Path<(u64, Res)>,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
 ) -> Response {
     handle_image(id, res, db).await
 }
 
 pub async fn image_handler_default(
     Path(id): Path<u64>,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
 ) -> Response {
     handle_image(id, Res::High, db).await
 }
 
 pub async fn thumbnail_info_handler(
     Path(id): Path<u64>,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
 ) -> Response {
     match db.get_upload_extended(id as i64).await {
         Some(upload) => Response::builder()

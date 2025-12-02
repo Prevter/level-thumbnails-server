@@ -16,7 +16,7 @@ const MAX_PENDING_PAGE_SIZE: u32 = 100;
 // Helper function to authenticate moderator/admin
 async fn authenticate_moderator(
     headers: &HeaderMap,
-    db: &database::Database,
+    db: &database::AppState,
 ) -> Result<database::User, Response> {
     let user = util::auth_middleware(headers, db).await?;
 
@@ -48,7 +48,7 @@ async fn force_save(
     id: u64,
     image_data: &[u8],
     user: &database::User,
-    db: &database::Database,
+    db: &database::AppState,
 ) -> Result<(), String> {
     let image_path = format!("thumbnails/{}.webp", id);
 
@@ -68,8 +68,15 @@ async fn add_to_pending(
     id: u64,
     image_data: &[u8],
     user: &database::User,
-    db: &database::Database,
+    db: &database::AppState,
 ) -> Response {
+    if db.settings.read().await.pause_submissions {
+        return util::str_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Thumbnail submissions are temporarily disabled",
+        );
+    }
+
     let image_path = format!("uploads/{}_{}.webp", user.id, id);
 
     match tokio::fs::write(&image_path, image_data).await {
@@ -105,7 +112,7 @@ async fn is_image_uploaded(id: u64) -> bool {
 }
 
 pub async fn upload(
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     headers: HeaderMap,
     Path(id): Path<u64>,
     data: Bytes,
@@ -183,8 +190,10 @@ pub struct PendingQueryParams {
     page: u32,
     per_page: u32,
     replacement_only: bool,
+    new_only: bool,
     level_id: Option<i64>,
     user_id: Option<i64>,
+    username: Option<String>,
 }
 
 impl Default for PendingQueryParams {
@@ -193,8 +202,10 @@ impl Default for PendingQueryParams {
             page: 1,
             per_page: DEFAULT_PENDING_PAGE_SIZE,
             replacement_only: false,
+            new_only: false,
             level_id: None,
             user_id: None,
+            username: None,
         }
     }
 }
@@ -224,7 +235,7 @@ struct PendingUploadsResponse {
 
 async fn get_pending_uploads(
     headers: HeaderMap,
-    db: &database::Database,
+    db: &database::AppState,
     filter: PendingFilter,
     query: PendingQueryParams,
 ) -> Response {
@@ -264,7 +275,9 @@ async fn get_pending_uploads(
         per_page: sanitized_query.per_page,
         level_id: sanitized_query.level_id,
         user_id: sanitized_query.user_id,
+        username: sanitized_query.username.clone(),
         replacement_only: sanitized_query.replacement_only,
+        new_only: sanitized_query.new_only,
     };
 
     match db.get_pending_uploads_paginated(options).await {
@@ -295,7 +308,7 @@ async fn get_pending_uploads(
 
 pub async fn get_pending_uploads_for_level(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Path(id): Path<i64>,
     Query(params): Query<PendingQueryParams>,
 ) -> Response {
@@ -304,7 +317,7 @@ pub async fn get_pending_uploads_for_level(
 
 pub async fn get_all_pending_uploads(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Query(params): Query<PendingQueryParams>,
 ) -> Response {
     get_pending_uploads(headers, &db, PendingFilter::All, params).await
@@ -312,7 +325,7 @@ pub async fn get_all_pending_uploads(
 
 pub async fn get_pending_uploads_for_user(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Path(id): Path<i64>,
     Query(params): Query<PendingQueryParams>,
 ) -> Response {
@@ -321,7 +334,7 @@ pub async fn get_pending_uploads_for_user(
 
 pub async fn get_pending_info(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Path(id): Path<i64>,
 ) -> Response {
     let _user = match authenticate_moderator(&headers, &db).await {
@@ -350,7 +363,7 @@ pub struct PendingUploadAction {
 
 pub async fn pending_action(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Path(id): Path<i64>,
     Json(action): Json<PendingUploadAction>,
 ) -> Response {
@@ -420,7 +433,7 @@ pub async fn pending_action(
 
 pub async fn get_pending_image(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Path(id): Path<i64>,
 ) -> Response {
     let _user = match authenticate_moderator(&headers, &db).await {

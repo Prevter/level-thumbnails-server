@@ -15,7 +15,7 @@ pub struct LoginPayload {
     user_id: i64,
     username: String,
     argon_token: String,
-    discord_token: Option<String>,
+    // discord_token: Option<String>,
 }
 
 fn handle_verdict_error(verdict: auth::Verdict) -> Response {
@@ -36,7 +36,7 @@ fn handle_verdict_error(verdict: auth::Verdict) -> Response {
 }
 
 pub async fn login(
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Json(payload): Json<LoginPayload>,
 ) -> Response {
     // Validate argon token
@@ -98,7 +98,7 @@ pub struct DiscordOAuthPayload {
 
 pub async fn discord_oauth_handler(
     Query(query): Query<DiscordOAuthPayload>,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
 ) -> Response {
     if query.code.is_empty() {
         return util::str_response(StatusCode::BAD_REQUEST, "Missing code parameter");
@@ -206,7 +206,7 @@ pub async fn discord_oauth_handler(
     }
 }
 
-pub async fn get_session(headers: HeaderMap, State(db): State<database::Database>) -> Response {
+pub async fn get_session(headers: HeaderMap, State(db): State<database::AppState>) -> Response {
     match util::auth_middleware(&headers, &db).await {
         Ok(user) => util::response(
             StatusCode::OK,
@@ -225,7 +225,7 @@ struct LinkToken {
     exp: u64,
 }
 
-pub async fn get_link_token(headers: HeaderMap, State(db): State<database::Database>) -> Response {
+pub async fn get_link_token(headers: HeaderMap, State(db): State<database::AppState>) -> Response {
     match util::auth_middleware(&headers, &db).await {
         Ok(user) => {
             if user.account_id != -1 {
@@ -267,7 +267,7 @@ pub struct LinkPayload {
 }
 
 async fn migrate_account(
-    db: &database::Database,
+    db: &database::AppState,
     user_id: i64,    // Geometry Dash user ID
     discord_id: i64, // Discord user ID
 ) -> Response {
@@ -311,7 +311,7 @@ async fn migrate_account(
 
 pub async fn link_account(
     headers: HeaderMap,
-    State(db): State<database::Database>,
+    State(db): State<database::AppState>,
     Json(payload): Json<LinkPayload>,
 ) -> Response {
     match util::auth_middleware(&headers, &db).await {

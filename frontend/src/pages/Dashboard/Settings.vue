@@ -7,6 +7,10 @@ const token = ref("");
 const loadingToken = ref(false);
 const linkingError = ref("");
 
+interface ServerSettings {
+  pause_submissions: boolean;
+}
+
 function downloadMyData() {
 
 }
@@ -56,6 +60,42 @@ function verifyAccount() {
   })
 }
 
+// if admin, fetch server settings
+const settings = ref<ServerSettings | null>(null);
+const pendingSettings = ref<ServerSettings | null>(null);
+if (user.value.role === 'admin') {
+  fetch('/admin/settings')
+      .then(response => response.json())
+      .then((data: ServerSettings) => {
+        settings.value = data;
+        pendingSettings.value = {...data};
+      })
+      .catch(error => {
+        console.error("Error fetching server settings:", error);
+      });
+}
+
+async function updateServerSettings() {
+  if (!pendingSettings.value) return;
+
+  const response = await fetch('/admin/settings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(pendingSettings.value)
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    alert(`Error updating server settings: ${data.message || 'Unknown error'}`);
+    return;
+  }
+
+  settings.value = {...pendingSettings.value};
+  alert("Server settings updated successfully.");
+}
+
 </script>
 
 <template>
@@ -83,6 +123,22 @@ function verifyAccount() {
       <p v-if="linkingError" class="error-message">
         {{ linkingError }}
       </p>
+    </section>
+    <section v-if="user.role === 'admin' && settings && pendingSettings">
+      <h3>Server Settings</h3>
+      <div class="d-flex gap-1">
+        <button class="btn flex-1"
+                :class="{ 'btn-danger': pendingSettings.pause_submissions, 'btn-success': !pendingSettings.pause_submissions }"
+                @click="pendingSettings.pause_submissions = !pendingSettings.pause_submissions;">
+          {{ pendingSettings.pause_submissions ? "Submissions Paused" : "Submissions Active" }}
+        </button>
+      </div>
+      <div class="d-flex gap-1 mt-1">
+        <button class="btn btn-primary flex-1" @click="updateServerSettings"
+                :disabled="JSON.stringify(settings) === JSON.stringify(pendingSettings)">
+          Save Changes
+        </button>
+      </div>
     </section>
     <section>
       <h3>Privacy & Data</h3>

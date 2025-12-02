@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {ref, onMounted, watch} from "vue";
+import {ref, onMounted, watch, computed} from "vue";
 import LoadingCircle from "../../components/LoadingCircle.vue";
 
 interface PendingItem {
@@ -12,42 +12,118 @@ interface PendingItem {
   upload_time: string;
 }
 
+interface PendingResponse {
+  uploads: PendingItem[];
+  page: number;
+  per_page: number;
+  total: number;
+}
+
 const loading = ref(true);
 const error = ref<string | null>(null);
 const pendingItems = ref<PendingItem[]>([]);
 const selectedItem = ref<PendingItem | null>(null);
+const totalItems = ref(0);
 
 const rejectReasonField = ref<HTMLInputElement | null>(null);
 const rejectReason = ref<string>("");
 
 const fullscreenLoading = ref(false);
 
+const filterUsername = ref<string>("");
+const filterLevelId = ref<string>("");
+const filterReplacement = ref<string>("all"); // "all", "replacement", "new"
+
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+const currentPage = ref(1);
+const itemsPerPage = ref(12);
+
+const filteredItems = computed(() => pendingItems.value);
+const totalPages = computed(() => {
+  return Math.ceil(totalItems.value / itemsPerPage.value);
+});
+
+const paginatedItems = computed(() => pendingItems.value);
+
+watch([filterLevelId, filterUsername], () => {
+  currentPage.value = 1;
+
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+  }
+
+  // debounce
+  debounceTimer = setTimeout(() => {
+    fetchPendingItems();
+  }, 500);
+});
+
+watch(filterReplacement, () => {
+  currentPage.value = 1;
+  fetchPendingItems();
+});
+
+watch(itemsPerPage, () => {
+  currentPage.value = 1;
+  fetchPendingItems();
+});
+
+watch(currentPage, () => {
+  fetchPendingItems();
+});
+
 watch(selectedItem, () => {
   rejectReason.value = "";
 });
 
-onMounted(async () => {
+async function fetchPendingItems() {
+  loading.value = true;
+  error.value = null;
+
   try {
-    const response = await fetch('/pending');
-    const data = await response.json();
+    const params = new URLSearchParams();
+    params.append('page', currentPage.value.toString());
+    params.append('per_page', itemsPerPage.value.toString());
+
+    if (filterLevelId.value.trim() !== "") {
+      params.append('level_id', filterLevelId.value.trim());
+    }
+
+    if (filterUsername.value.trim() !== "") {
+      params.append('username', filterUsername.value.trim());
+    }
+
+    if (filterReplacement.value === "replacement") {
+      params.append('replacement_only', 'true');
+    } else if (filterReplacement.value === "new") {
+      params.append('new_only', 'true');
+    }
+
+    const response = await fetch(`/pending?${params.toString()}`);
+    const data: PendingResponse = await response.json();
 
     // Check if the response is ok
     if (!response.ok) {
-      throw new Error(data.message || 'Failed to fetch pending items');
+      throw new Error((data as any).message || 'Failed to fetch pending items');
     }
 
-    pendingItems.value = data;
+    pendingItems.value = data.uploads;
+    totalItems.value = data.total;
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'An unknown error occurred';
   } finally {
     loading.value = false;
   }
+}
+
+onMounted(() => {
+  fetchPendingItems();
 });
 
 async function thumbnailAction(id: number, accept: boolean) {
   if (!selectedItem.value || fullscreenLoading.value) return;
   if (!accept) {
-    // make sure the reject reason is provided
     if (rejectReason.value.trim() === "") {
       rejectReasonField.value!.focus();
       return;
@@ -71,13 +147,18 @@ async function thumbnailAction(id: number, accept: boolean) {
       throw new Error(data.message || 'Failed to process thumbnail action');
     }
 
-    // remove the item from the list
-    pendingItems.value = pendingItems.value.filter(item => item.id !== id);
+    await fetchPendingItems();
     selectedItem.value = null;
   } catch (err) {
     alert("An error occurred while processing the thumbnail action: " + (err instanceof Error ? err.message : 'Unknown error'));
   } finally {
     fullscreenLoading.value = false;
+  }
+}
+
+function goToPage(page: number) {
+  if (page >= 1 && page <= totalPages.value) {
+    currentPage.value = page;
   }
 }
 </script>
@@ -91,10 +172,7 @@ async function thumbnailAction(id: number, accept: boolean) {
     <p>{{ error }}</p>
   </div>
   <div v-else>
-    <div v-if="pendingItems.length === 0" class="text-center">
-      <p>No pending items found.</p>
-    </div>
-    <div v-else-if="selectedItem" class="selected-item page-transition">
+    <div v-if="selectedItem" class="selected-item page-transition">
       <button @click="selectedItem = null" class="btn btn-secondary">Back to Thumbnails</button>
 
       <h3 class="text-center">
@@ -130,12 +208,100 @@ async function thumbnailAction(id: number, accept: boolean) {
         </div>
       </div>
     </div>
-    <div class="image-grid page-transition" v-else>
-      <div v-for="item in pendingItems" :key="item.id" class="image-item" @click="selectedItem = item">
-        <img :src="`/pending/${item.id}/image`" alt="Thumbnail" class="thumbnail-image" loading="lazy" />
-        <div class="thumbnail-info">
-          By {{ item.username }}<br/>
-          Level ID: {{ item.level_id }}<br/>
+    <div v-else class="page-transition">
+      <div class="filters-container">
+        <div class="filters-grid">
+          <div class="filter-item">
+            <label for="filterReplacement">Type:</label>
+            <select
+                id="filterReplacement"
+                v-model="filterReplacement"
+                class="form-control"
+            >
+              <option value="all">All</option>
+              <option value="replacement">Replacements Only</option>
+              <option value="new">New Only</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label for="itemsPerPage">Items per page:</label>
+            <select
+                id="itemsPerPage"
+                v-model.number="itemsPerPage"
+                class="form-control"
+            >
+              <option :value="12">12</option>
+              <option :value="24">24</option>
+              <option :value="36">36</option>
+              <option :value="48">48</option>
+              <option :value="60">60</option>
+              <option :value="96">96</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label for="filterUsername">Username:</label>
+            <input
+                id="filterUsername"
+                type="text"
+                v-model="filterUsername"
+                class="form-control"
+                placeholder="Search by username"
+            />
+          </div>
+          <div class="filter-item">
+            <label for="filterLevelId">Level ID:</label>
+            <input
+                id="filterLevelId"
+                type="text"
+                v-model="filterLevelId"
+                class="form-control"
+                placeholder="Search by level ID"
+            />
+          </div>
+        </div>
+        <div class="filter-results">
+          Showing {{ pendingItems.length }} of {{ totalItems }} items
+        </div>
+
+        <div v-if="totalPages > 1" class="pagination-container">
+          <div class="pagination-controls">
+            <button
+                @click="goToPage(currentPage - 1)"
+                :disabled="currentPage === 1"
+                class="btn btn-secondary btn-sm"
+            >
+              ◂
+            </button>
+
+            <span class="page-info">
+              Page {{ currentPage }} of {{ totalPages }}
+            </span>
+
+            <button
+                @click="goToPage(currentPage + 1)"
+                :disabled="currentPage === totalPages"
+                class="btn btn-secondary btn-sm"
+            >
+              ▸
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="totalItems === 0" class="text-center mt-2">
+        <p>No pending items found in the database.</p>
+      </div>
+      <div v-else-if="filteredItems.length === 0" class="text-center mt-2">
+        <p>No items match the current filters.</p>
+      </div>
+      <div v-else class="image-grid">
+        <div v-for="item in paginatedItems" :key="item.id" class="image-item" @click="selectedItem = item">
+          <img :src="`/pending/${item.id}/image`" alt="Thumbnail" class="thumbnail-image" loading="lazy"/>
+          <div class="thumbnail-info">
+            By {{ item.username }}<br/>
+            Level ID: {{ item.level_id }}<br/>
+            <span v-if="item.replacement" class="replacement-badge">Replacement</span>
+          </div>
         </div>
       </div>
     </div>
@@ -154,10 +320,48 @@ async function thumbnailAction(id: number, accept: boolean) {
   font-size: 1.2em;
 }
 
+.filters-container {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.filters-container h3 {
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+.filters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.filter-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.filter-item label {
+  margin-bottom: 6px;
+  font-weight: 500;
+  font-size: 0.9em;
+}
+
+.filter-results {
+  text-align: center;
+  font-size: 0.95em;
+  opacity: 0.8;
+  margin-top: 8px;
+}
+
 .image-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 2fr));
   gap: 16px;
+  margin: 24px 0;
 }
 
 .image-item {
@@ -193,6 +397,43 @@ async function thumbnailAction(id: number, accept: boolean) {
   transition: opacity 0.3s ease;
 }
 
+.replacement-badge {
+  display: inline-block;
+  background: rgba(255, 165, 0, 0.8);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: bold;
+  margin-top: 4px;
+}
+
+.pagination-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  margin-top: 16px;
+  padding: 8px;
+}
+
+.pagination-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.page-info {
+  margin: 0 12px;
+  font-weight: 500;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.9em;
+}
+
 .thumbnail-image {
   width: 100%;
   height: auto;
@@ -222,4 +463,17 @@ async function thumbnailAction(id: number, accept: boolean) {
   justify-content: space-between;
 }
 
+@media (max-width: 768px) {
+  .filters-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pagination-controls {
+    font-size: 0.9em;
+  }
+
+  .page-info {
+    margin: 0 8px;
+  }
+}
 </style>

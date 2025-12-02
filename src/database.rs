@@ -5,9 +5,15 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    pub pause_submissions: bool,
+}
+
 #[derive(Debug, Clone)]
-pub struct Database {
+pub struct AppState {
     pub pool: Arc<sqlx::Pool<Postgres>>,
+    pub settings: Arc<tokio::sync::RwLock<Settings>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, sqlx::Type)]
@@ -77,7 +83,9 @@ pub struct PendingQueryOptions {
     pub per_page: u32,
     pub level_id: Option<i64>,
     pub user_id: Option<i64>,
+    pub username: Option<String>,
     pub replacement_only: bool,
+    pub new_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +107,7 @@ pub struct UserStats {
     pub active_thumbnail_count: i64,
 }
 
-impl Database {
+impl AppState {
     pub async fn new() -> Self {
         let connection_string = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let pool = PgPoolOptions::new()
@@ -111,7 +119,18 @@ impl Database {
         // Run migrations if needed
         sqlx::migrate!("./migrations").run(&pool).await.expect("Failed to run migrations");
 
-        Database { pool: Arc::new(pool) }
+        // load settings from state.json or create default
+        let settings = if let Ok(settings_data) = tokio::fs::read_to_string("state.json").await {
+            serde_json::from_str(&settings_data).unwrap_or(Settings {
+                pause_submissions: false,
+            })
+        } else {
+            Settings {
+                pause_submissions: false,
+            }
+        };
+
+        AppState { pool: Arc::new(pool), settings: Arc::new(tokio::sync::RwLock::new(settings)) }
     }
 
     pub async fn get_upload_info(&self, id: i64) -> Option<UploadInfo> {
@@ -251,16 +270,16 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_pending_uploads(&self) -> Result<Vec<PendingUpload>, sqlx::Error> {
-        sqlx::query_as::<_, PendingUpload>(
-            "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
-             LEFT JOIN users ON users.id = user_id
-             WHERE accepted = FALSE AND accepted_time IS NULL
-             ORDER BY upload_time",
-        )
-        .fetch_all(&*self.pool)
-        .await
-    }
+    // pub async fn get_pending_uploads(&self) -> Result<Vec<PendingUpload>, sqlx::Error> {
+    //     sqlx::query_as::<_, PendingUpload>(
+    //         "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
+    //          LEFT JOIN users ON users.id = user_id
+    //          WHERE accepted = FALSE AND accepted_time IS NULL
+    //          ORDER BY upload_time",
+    //     )
+    //     .fetch_all(&*self.pool)
+    //     .await
+    // }
 
     fn apply_pending_filters<'a>(
         builder: &mut QueryBuilder<'a, Postgres>,
@@ -274,9 +293,23 @@ impl Database {
             builder.push(" AND uploads.user_id = ").push_bind(user_id);
         }
 
+        if let Some(ref username) = options.username {
+            builder.push(" AND LOWER(username) LIKE LOWER(")
+                .push_bind(format!("%{}%", username))
+                .push(")");
+        }
+
         if options.replacement_only {
             builder.push(
                 " AND EXISTS (
+                    SELECT 1 FROM uploads previous
+                    WHERE previous.level_id = uploads.level_id
+                      AND previous.accepted = TRUE
+                )",
+            );
+        } else if options.new_only {
+            builder.push(
+                " AND NOT EXISTS (
                     SELECT 1 FROM uploads previous
                     WHERE previous.level_id = uploads.level_id
                       AND previous.accepted = TRUE
@@ -318,20 +351,20 @@ impl Database {
         Ok(PendingUploadsPage { uploads, total })
     }
 
-    pub async fn get_pending_uploads_for_level(
-        &self,
-        level_id: i64,
-    ) -> Result<Vec<PendingUpload>, sqlx::Error> {
-        sqlx::query_as::<_, PendingUpload>(
-            "SELECT uploads.id, user_id, username, accepted, upload_time FROM uploads
-                  LEFT JOIN users ON users.id = user_id
-                  WHERE accepted = FALSE AND accepted_time IS NULL AND level_id = $1
-                  ORDER BY upload_time",
-        )
-        .bind(level_id)
-        .fetch_all(&*self.pool)
-        .await
-    }
+    // pub async fn get_pending_uploads_for_level(
+    //     &self,
+    //     level_id: i64,
+    // ) -> Result<Vec<PendingUpload>, sqlx::Error> {
+    //     sqlx::query_as::<_, PendingUpload>(
+    //         "SELECT uploads.id, user_id, username, accepted, upload_time FROM uploads
+    //               LEFT JOIN users ON users.id = user_id
+    //               WHERE accepted = FALSE AND accepted_time IS NULL AND level_id = $1
+    //               ORDER BY upload_time",
+    //     )
+    //     .bind(level_id)
+    //     .fetch_all(&*self.pool)
+    //     .await
+    // }
 
     pub async fn get_pending_uploads_for_user(
         &self,
@@ -431,8 +464,14 @@ impl Database {
 
         Ok(user)
     }
+
+    pub async fn save_settings(&self) -> Result<(), std::io::Error> {
+        let settings = self.settings.read().await;
+        let settings_data = serde_json::to_string_pretty(&*settings)?;
+        tokio::fs::write("state.json", settings_data).await
+    }
 }
 
-pub async fn get_db() -> Database {
-    Database::new().await
+pub async fn get_db() -> AppState {
+    AppState::new().await
 }

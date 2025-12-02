@@ -13,7 +13,7 @@ mod database;
 mod routes;
 mod util;
 
-use routes::{login, thumbnail, upload, user};
+use routes::{admin, login, thumbnail, upload, user};
 
 #[tokio::main]
 async fn main() {
@@ -75,6 +75,8 @@ async fn main() {
         .route("/pending/level/{id}", get(upload::get_pending_uploads_for_level))
         .route("/pending/user/{id}", get(upload::get_pending_uploads_for_user))
         // /admin
+        .route("/admin/settings", get(admin::get_settings))
+        .route("/admin/settings", post(admin::update_settings))
         // .route("/admin/users", get(routes::admin::get_users))
         // .route("/admin/user/:id", get(routes::admin::get_user_by_id))
         // .route("/admin/user/:id", patch(routes::admin::update_user))
