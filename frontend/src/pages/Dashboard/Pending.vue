@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {ref, onMounted, watch, computed} from "vue";
 import LoadingCircle from "../../components/LoadingCircle.vue";
+import ImageDiffer from "../../components/ImageDiffer.vue";
 
 interface PendingItem {
   id: number;
@@ -181,7 +182,10 @@ function goToPage(page: number) {
         Submitted by: {{ selectedItem!.username }}
       </h3>
 
-      <img :src="`/pending/${selectedItem!.id}/image`" alt="Selected Image" class="thumbnail-image mb-1"/>
+      <ImageDiffer
+          :src-a="`/pending/${selectedItem!.id}/image`"
+          :src-b="selectedItem!.replacement ? `/thumbnail/${selectedItem!.level_id}` : undefined"
+      />
       <div class="filler"></div>
 
       <div class="d-flex flex-col gap-1 w-100 sensitive-actions">
@@ -380,12 +384,6 @@ function goToPage(page: number) {
   opacity: 1;
 }
 
-.thumbnail-image {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
 .thumbnail-info {
   padding: 8px;
   position: absolute;
@@ -446,12 +444,6 @@ function goToPage(page: number) {
   align-items: center;
   margin-top: 20px;
   height: 100%;
-}
-
-.selected-item > img {
-  max-width: 800px;
-  max-height: 80vh;
-  object-fit: contain;
 }
 
 .sensitive-actions {
