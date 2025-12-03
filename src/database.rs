@@ -1,5 +1,6 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, Postgres, QueryBuilder};
+use std::path::Path;
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -121,16 +122,15 @@ impl AppState {
 
         // load settings from state.json or create default
         let settings = if let Ok(settings_data) = tokio::fs::read_to_string("state.json").await {
-            serde_json::from_str(&settings_data).unwrap_or(Settings {
-                pause_submissions: false,
-            })
+            serde_json::from_str(&settings_data).unwrap_or(Settings { pause_submissions: false })
         } else {
-            Settings {
-                pause_submissions: false,
-            }
+            Settings { pause_submissions: false }
         };
 
-        AppState { pool: Arc::new(pool), settings: Arc::new(tokio::sync::RwLock::new(settings)) }
+        AppState {
+            pool: Arc::new(pool),
+            settings: Arc::new(tokio::sync::RwLock::new(settings)),
+        }
     }
 
     pub async fn get_upload_info(&self, id: i64) -> Option<UploadInfo> {
@@ -294,61 +294,76 @@ impl AppState {
         }
 
         if let Some(ref username) = options.username {
-            builder.push(" AND LOWER(username) LIKE LOWER(")
+            builder
+                .push(" AND LOWER(username) LIKE LOWER(")
                 .push_bind(format!("%{}%", username))
                 .push(")");
         }
+    }
 
-        if options.replacement_only {
-            builder.push(
-                " AND EXISTS (
-                    SELECT 1 FROM uploads previous
-                    WHERE previous.level_id = uploads.level_id
-                      AND previous.accepted = TRUE
-                )",
-            );
-        } else if options.new_only {
-            builder.push(
-                " AND NOT EXISTS (
-                    SELECT 1 FROM uploads previous
-                    WHERE previous.level_id = uploads.level_id
-                      AND previous.accepted = TRUE
-                )",
-            );
-        }
+    fn is_image_uploaded(level_id: i64) -> bool {
+        let image_path = format!("thumbnails/{}.webp", level_id);
+        Path::new(&image_path).exists()
     }
 
     pub async fn get_pending_uploads_paginated(
         &self,
         options: PendingQueryOptions,
     ) -> Result<PendingUploadsPage, sqlx::Error> {
-        let per_page = options.per_page as i64;
-        let offset = ((options.page.saturating_sub(1)) as i64) * per_page;
+        if options.replacement_only || options.new_only {
+            let mut data_builder = QueryBuilder::new(
+                "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
+                 LEFT JOIN users ON users.id = user_id
+                 WHERE accepted = FALSE AND accepted_time IS NULL",
+            );
+            Self::apply_pending_filters(&mut data_builder, &options);
+            data_builder.push(" ORDER BY upload_time ASC, uploads.id ASC");
 
-        let mut data_builder = QueryBuilder::new(
-            "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
-             LEFT JOIN users ON users.id = user_id
-             WHERE accepted = FALSE AND accepted_time IS NULL",
-        );
-        Self::apply_pending_filters(&mut data_builder, &options);
-        data_builder
-            .push(" ORDER BY upload_time ASC, uploads.id ASC LIMIT ")
-            .push_bind(per_page)
-            .push(" OFFSET ")
-            .push_bind(offset);
+            let mut all_uploads =
+                data_builder.build_query_as::<PendingUpload>().fetch_all(&*self.pool).await?;
 
-        let uploads = data_builder.build_query_as::<PendingUpload>().fetch_all(&*self.pool).await?;
+            all_uploads.retain(|upload| {
+                let is_uploaded = Self::is_image_uploaded(upload.level_id);
+                if options.replacement_only { is_uploaded } else { !is_uploaded }
+            });
 
-        let mut count_builder = QueryBuilder::new(
-            "SELECT COUNT(*) FROM uploads
-             LEFT JOIN users ON users.id = user_id
-             WHERE accepted = FALSE AND accepted_time IS NULL",
-        );
-        Self::apply_pending_filters(&mut count_builder, &options);
+            let total = all_uploads.len() as i64;
+            let per_page = options.per_page as usize;
+            let offset = options.page.saturating_sub(1) as usize * per_page;
 
-        let total: i64 = count_builder.build_query_scalar().fetch_one(&*self.pool).await?;
+            let uploads = all_uploads.into_iter().skip(offset).take(per_page).collect();
 
-        Ok(PendingUploadsPage { uploads, total })
+            Ok(PendingUploadsPage { uploads, total })
+        } else {
+            let per_page = options.per_page as i64;
+            let offset = ((options.page.saturating_sub(1)) as i64) * per_page;
+
+            let mut data_builder = QueryBuilder::new(
+                "SELECT uploads.id, user_id, username, level_id, accepted, upload_time FROM uploads
+                 LEFT JOIN users ON users.id = user_id
+                 WHERE accepted = FALSE AND accepted_time IS NULL",
+            );
+            Self::apply_pending_filters(&mut data_builder, &options);
+            data_builder
+                .push(" ORDER BY upload_time ASC, uploads.id ASC LIMIT ")
+                .push_bind(per_page)
+                .push(" OFFSET ")
+                .push_bind(offset);
+
+            let uploads =
+                data_builder.build_query_as::<PendingUpload>().fetch_all(&*self.pool).await?;
+
+            let mut count_builder = QueryBuilder::new(
+                "SELECT COUNT(*) FROM uploads
+                 LEFT JOIN users ON users.id = user_id
+                 WHERE accepted = FALSE AND accepted_time IS NULL",
+            );
+            Self::apply_pending_filters(&mut count_builder, &options);
+
+            let total: i64 = count_builder.build_query_scalar().fetch_one(&*self.pool).await?;
+
+            Ok(PendingUploadsPage { uploads, total })
+        }
     }
 
     // pub async fn get_pending_uploads_for_level(

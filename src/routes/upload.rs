@@ -103,12 +103,12 @@ async fn add_to_pending(
 
 async fn has_pending_upload(user_id: i64, level_id: u64) -> bool {
     let image_path = format!("uploads/{}_{}.webp", user_id, level_id);
-    tokio::fs::metadata(&image_path).await.is_ok()
+    tokio::fs::try_exists(&image_path).await.unwrap_or(false)
 }
 
 async fn is_image_uploaded(id: u64) -> bool {
     let image_path = format!("thumbnails/{}.webp", id);
-    tokio::fs::metadata(&image_path).await.is_ok()
+    tokio::fs::try_exists(&image_path).await.unwrap_or(false)
 }
 
 pub async fn upload(
