@@ -31,9 +31,7 @@ services:
       DATABASE_URL: postgres://app:app@db:5432/level_thumbnails
       BIND_ADDRESS: 0.0.0.0:3000
     volumes:
-      - thumbnails:/app/thumbnails
-      - uploads:/app/uploads
-      - logs:/app/logs
+      - appdata:/app
       - type: bind
         source: ./dist
         target: /app/dist
@@ -46,7 +44,5 @@ services:
 
 volumes:
   pgdata:
-  thumbnails:
-  uploads:
-  logs:
+  appdata:
 

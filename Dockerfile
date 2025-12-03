@@ -31,7 +31,6 @@ RUN mkdir -p /app/logs /app/uploads /app/thumbnails
 
 ENV RUST_LOG=info
 EXPOSE 3000
-VOLUME ["/app/logs", "/app/uploads", "/app/thumbnails"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 \
     CMD wget -qO- http://127.0.0.1:3000/stats || exit 1
